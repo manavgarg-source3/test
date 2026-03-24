@@ -3,24 +3,32 @@ import {
   Search, Filter, FileText, Battery, 
   AlertCircle, CheckCircle2, BarChart3, Activity,
   ChevronDown, ChevronUp, Phone, Mail, User, Info, Wrench, FileDown,
-  ShieldAlert, ShieldCheck, BellRing, Gauge
+  ShieldAlert, ShieldCheck, BellRing, Gauge, Plus, MessageSquare
 } from "lucide-react";
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, AreaChart, Area, CartesianGrid
+  PieChart, Pie, Cell, CartesianGrid
 } from "recharts";
 import toast from "react-hot-toast";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 export default function Reports({ records = [] }) {
+  // --- 1. LOCAL DATA SYNC (For Live Remarks) ---
+  const [localRecords, setLocalRecords] = useState([]);
+  
+  useEffect(() => {
+    setLocalRecords(records);
+  }, [records]);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [filterCompany, setFilterCompany] = useState("All");
   const [quickFilter, setQuickFilter] = useState("All"); 
   const [expandedRow, setExpandedRow] = useState(null);
   const [lastSynced, setLastSynced] = useState("Just now");
+  const [newNote, setNewNote] = useState("");
 
-  // --- LAST UPDATED SIMULATION ---
+  // --- 2. LAST UPDATED SIMULATION ---
   useEffect(() => {
     const timer = setInterval(() => {
       setLastSynced(`${Math.floor(Math.random() * 5) + 1} min ago`);
@@ -28,18 +36,48 @@ export default function Reports({ records = [] }) {
     return () => clearInterval(timer);
   }, []);
 
-  // --- CORE ANALYTICS & FLEET SCORE ---
+  // --- 3. MECHANIC REMARK LOGIC ---
+  const handleAddRemark = (id) => {
+    if (!newNote.trim()) {
+      toast.error("Please enter a remark first.");
+      return;
+    }
+
+    const updatedRecords = localRecords.map(r => {
+      if (r.id === id) {
+        const notes = r.extraNotes ? [...r.extraNotes, newNote] : [newNote];
+        return { ...r, extraNotes: notes };
+      }
+      return r;
+    });
+
+    setLocalRecords(updatedRecords);
+    localStorage.setItem("fleetRecords", JSON.stringify(updatedRecords)); 
+    setNewNote(""); 
+    toast.success("Mechanic remark added to official record!");
+  };
+
+  const toggleRow = (id) => {
+    if (expandedRow !== id) {
+      setExpandedRow(id);
+      setNewNote(""); // Reset draft note when opening a new row
+    } else {
+      setExpandedRow(null);
+    }
+  };
+
+  // --- 4. CORE ANALYTICS ---
   const analytics = useMemo(() => {
     let criticalCount = 0; let totalBattery = 0; let batteryReadings = 0; let generalJobs = 0;
     
-    records.forEach(r => {
+    localRecords.forEach(r => {
       const batVal = Number(r.batteryHealth);
       if (r.exteriorCondition?.includes("Major") || (batVal > 0 && batVal <= 30)) criticalCount++;
       if (batVal > 0) { totalBattery += batVal; batteryReadings++; }
       if (r.jobType === "General Service") generalJobs++;
     });
 
-    const total = records.length;
+    const total = localRecords.length;
     const rawScore = total > 0 ? 100 - ((criticalCount / total) * 100 * 1.5) : 100;
 
     return {
@@ -49,11 +87,11 @@ export default function Reports({ records = [] }) {
       fleetScore: Math.max(0, Math.round(rawScore)),
       generalPercentage: total > 0 ? Math.round((generalJobs / total) * 100) : 0
     };
-  }, [records]);
+  }, [localRecords]);
 
-  // --- LIVE ALERTS GENERATOR ---
+  // --- 5. LIVE ALERTS GENERATOR ---
   const activeAlerts = useMemo(() => {
-    return records.filter(r => r.exteriorCondition?.includes("Major") || (Number(r.batteryHealth) > 0 && Number(r.batteryHealth) <= 30))
+    return localRecords.filter(r => r.exteriorCondition?.includes("Major") || (Number(r.batteryHealth) > 0 && Number(r.batteryHealth) <= 30))
       .map(r => ({
         id: r.id,
         vehicle: r.vehicleNumber,
@@ -61,11 +99,11 @@ export default function Reports({ records = [] }) {
         date: r.date.split(',')[0],
         type: Number(r.batteryHealth) <= 30 ? 'battery' : 'damage'
       }));
-  }, [records]);
+  }, [localRecords]);
 
-  // --- MULTI-LAYER FILTERING ---
+  // --- 6. MULTI-LAYER FILTERING ---
   const filteredRecords = useMemo(() => {
-    return records.filter((r) => {
+    return localRecords.filter((r) => {
       const matchesSearch = r.vehicleNumber.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCompany = filterCompany === "All" || r.companyName === filterCompany;
       let matchesQuick = true;
@@ -74,11 +112,11 @@ export default function Reports({ records = [] }) {
       if (quickFilter === "Healthy") matchesQuick = !isCritical;
       return matchesSearch && matchesCompany && matchesQuick;
     });
-  }, [records, searchTerm, filterCompany, quickFilter]);
+  }, [localRecords, searchTerm, filterCompany, quickFilter]);
 
-  const companies = ["All", ...new Set(records.map(r => r.companyName).filter(Boolean))];
+  const companies = ["All", ...new Set(localRecords.map(r => r.companyName).filter(Boolean))];
 
-  // --- CHART DATA ---
+  // --- 7. CHART DATA ---
   const jobTypeData = useMemo(() => {
     const counts = { "Quick Service": 0, "General Service": 0 };
     filteredRecords.forEach(r => { if (counts[r.jobType] !== undefined) counts[r.jobType]++; });
@@ -99,21 +137,7 @@ export default function Reports({ records = [] }) {
     ].filter(d => d.value > 0);
   }, [filteredRecords]);
 
-  const batteryData = useMemo(() => {
-    const bins = { "0-20%": 0, "21-50%": 0, "51-80%": 0, "81-100%": 0 };
-    filteredRecords.forEach(r => {
-      const b = Number(r.batteryHealth);
-      if (b > 0 && b <= 20) bins["0-20%"]++;
-      else if (b > 20 && b <= 50) bins["21-50%"]++;
-      else if (b > 50 && b <= 80) bins["51-80%"]++;
-      else if (b > 80) bins["81-100%"]++;
-    });
-    return Object.keys(bins).map(key => ({ name: key, count: bins[key] }));
-  }, [filteredRecords]);
-
-
-  // --- ENTERPRISE PDF GENERATION ---
-  
+  // --- 8. ENTERPRISE PDF GENERATION ---
   const downloadMasterPDF = () => {
     if (filteredRecords.length === 0) {
       toast.error("No data available to export."); return;
@@ -130,7 +154,7 @@ export default function Reports({ records = [] }) {
     doc.setFont(undefined, 'bold');
     doc.text("FLEET PRO INTELLIGENCE", 14, 17);
     
-    // Report Meta Data
+    // Meta Data
     doc.setFontSize(10);
     doc.setTextColor(100, 116, 139);
     doc.setFont(undefined, 'normal');
@@ -155,10 +179,11 @@ export default function Reports({ records = [] }) {
     doc.text(`Critical Interventions Required: ${criticalVechs.length} Vehicles`, 100, 72);
 
     // Main Data Table
-    const tableColumn = ["ID", "Vehicle No.", "Company", "Service Type", "Battery", "Condition"];
+    const tableColumn = ["ID", "Vehicle No.", "Company", "Service Type", "Battery", "Condition", "Remarks"];
     const tableRows = filteredRecords.map(r => [
       `#${r.id.toString().slice(-5)}`, r.vehicleNumber, r.companyName || "Personal", r.jobType,
-      r.batteryHealth ? `${r.batteryHealth}%` : "N/A", r.exteriorCondition ? r.exteriorCondition.split(' (')[0] : "N/A"
+      r.batteryHealth ? `${r.batteryHealth}%` : "N/A", r.exteriorCondition ? r.exteriorCondition.split(' (')[0] : "N/A",
+      r.extraNotes ? `${r.extraNotes.length} notes` : "None"
     ]);
 
     autoTable(doc, {
@@ -172,7 +197,7 @@ export default function Reports({ records = [] }) {
       margin: { top: 30 }
     });
 
-    // Action Items Section (Dynamic)
+    // Action Items Section
     let finalY = doc.lastAutoTable.finalY + 15;
     if (criticalVechs.length > 0) {
       if (finalY > 250) { doc.addPage(); finalY = 20; } 
@@ -191,7 +216,7 @@ export default function Reports({ records = [] }) {
       if (criticalVechs.length > 5) doc.text(`...and ${criticalVechs.length - 5} more.`, 14, finalY + 8 + (5 * 6));
     }
 
-    // Footer & Pagination
+    // Footer
     const pageCount = doc.internal.getNumberOfPages();
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
@@ -209,7 +234,7 @@ export default function Reports({ records = [] }) {
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.width;
 
-    // Header Branding
+    // Header
     doc.setFillColor(248, 250, 252);
     doc.rect(0, 0, pageWidth, 40, 'F');
     doc.setFontSize(24);
@@ -222,31 +247,18 @@ export default function Reports({ records = [] }) {
     doc.text(`Document Ref: #${record.id.toString().slice(-8).toUpperCase()}`, 14, 28);
     doc.text(`Timestamp: ${record.date}`, 14, 34);
 
-    // Client Block
-    doc.setFontSize(11);
-    doc.setTextColor(15, 23, 42);
-    doc.setFont(undefined, 'bold');
+    // Client & Vehicle Block
+    doc.setFontSize(11); doc.setTextColor(15, 23, 42); doc.setFont(undefined, 'bold');
     doc.text("BILL TO / OWNER DETAILS", 14, 55);
-    doc.setFont(undefined, 'normal');
-    doc.setFontSize(10);
-    doc.setTextColor(71, 85, 105);
-    doc.text(`Name: ${record.fleetOwnerName}`, 14, 63);
-    doc.text(`Company: ${record.companyName || 'N/A'}`, 14, 69);
-    doc.text(`Phone: ${record.fleetOwnerContact}`, 14, 75);
-
-    // Vehicle Block
-    doc.setFontSize(11);
-    doc.setTextColor(15, 23, 42);
-    doc.setFont(undefined, 'bold');
     doc.text("VEHICLE IDENTIFICATION", 110, 55);
-    doc.setFont(undefined, 'normal');
-    doc.setFontSize(10);
-    doc.setTextColor(71, 85, 105);
-    doc.text(`Registration: ${record.vehicleNumber}`, 110, 63);
-    doc.text(`Requested Job: ${record.jobType}`, 110, 69);
+    
+    doc.setFont(undefined, 'normal'); doc.setFontSize(10); doc.setTextColor(71, 85, 105);
+    doc.text(`Name: ${record.fleetOwnerName}\nCompany: ${record.companyName || 'N/A'}\nPhone: ${record.fleetOwnerContact}`, 14, 63);
+    doc.text(`Registration: ${record.vehicleNumber}\nRequested Job: ${record.jobType}`, 110, 63);
 
+    // Tech Specs AutoTable
     autoTable(doc, {
-      startY: 90,
+      startY: 85,
       theme: 'grid',
       head: [['Diagnostic Check', 'Recorded Status']],
       body: [
@@ -259,35 +271,46 @@ export default function Reports({ records = [] }) {
       styles: { cellPadding: 6, fontSize: 10 }
     });
 
-    const finalY = doc.lastAutoTable.finalY + 15;
-    doc.setFont(undefined, 'bold');
-    doc.setTextColor(15, 23, 42);
-    doc.text("MECHANIC NOTES & REPORTED ISSUES", 14, finalY);
+    let finalY = doc.lastAutoTable.finalY + 15;
     
-    doc.setDrawColor(203, 213, 225);
-    doc.setFillColor(248, 250, 252);
-    doc.rect(14, finalY + 5, 182, 35, 'FD');
-    doc.setFont(undefined, 'normal');
-    doc.setTextColor(71, 85, 105);
+    // Original Reported Issues
+    doc.setFont(undefined, 'bold'); doc.setTextColor(15, 23, 42);
+    doc.text("CLIENT REPORTED ISSUES", 14, finalY);
+    doc.setDrawColor(203, 213, 225); doc.setFillColor(248, 250, 252);
+    doc.rect(14, finalY + 5, 182, 30, 'FD');
+    doc.setFont(undefined, 'normal'); doc.setTextColor(71, 85, 105);
     const splitText = doc.splitTextToSize(record.issueDescription || "No specific issues detailed by the client prior to inspection.", 175);
     doc.text(splitText, 18, finalY + 12);
 
-    // Terms and Signatures
-    const sigY = finalY + 60;
-    doc.setFontSize(8);
-    doc.text("Terms: By signing below, the client authorizes the diagnostic work detailed above.", 14, sigY - 15);
+    // Mechanic Remarks
+    finalY += 45;
+    if (record.extraNotes && record.extraNotes.length > 0) {
+      if (finalY > 250) { doc.addPage(); finalY = 20; }
+      doc.setFont(undefined, 'bold'); doc.setTextColor(15, 23, 42);
+      doc.text("POST-INSPECTION MECHANIC REMARKS", 14, finalY);
+      doc.setFont(undefined, 'normal'); doc.setTextColor(220, 38, 38);
+      record.extraNotes.forEach((note, idx) => {
+        doc.text(`[+] ${note}`, 14, finalY + 8 + (idx * 6));
+      });
+      finalY += 10 + (record.extraNotes.length * 6);
+    }
+
+    // Signatures
+    const sigY = finalY + 25;
+    doc.setFontSize(8); doc.setTextColor(148, 163, 184);
+    doc.text("Terms: By signing below, the client authorizes the diagnostic work detailed above.", 14, sigY - 10);
     
     doc.setDrawColor(148, 163, 184);
     doc.line(14, sigY, 70, sigY);
     doc.line(140, sigY, 196, sigY);
-    doc.setFontSize(9);
+    doc.setFontSize(9); doc.setTextColor(15, 23, 42);
     doc.text("Service Advisor Signature", 14, sigY + 5);
     doc.text("Client Authorization", 140, sigY + 5);
 
     doc.save(`Intake_${record.vehicleNumber}.pdf`);
   };
 
-  // --- HELPER UI FUNCTIONS ---
+  // --- 9. HELPER UI FUNCTIONS ---
   const getBatteryColor = (health) => {
     const num = parseInt(health);
     if (isNaN(num)) return "bg-slate-200";
@@ -311,9 +334,8 @@ export default function Reports({ records = [] }) {
     return "border-l-4 border-l-emerald-500";
   };
 
-  const toggleRow = (id) => setExpandedRow(expandedRow === id ? null : id);
-
-  if (records.length === 0) {
+  // --- EMPTY STATE ---
+  if (localRecords.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-[70vh] text-slate-500 animate-in fade-in px-4">
         <FileText size={48} className="text-indigo-400 mb-4 opacity-50" />
@@ -323,10 +345,11 @@ export default function Reports({ records = [] }) {
     );
   }
 
+  // --- MAIN RENDER ---
   return (
     <div className="max-w-[90rem] mx-auto space-y-8 animate-in fade-in duration-500 pb-12 px-4 sm:px-6 xl:px-8 font-sans">
       
-      {/* 1. DECISION LAYER (The CEO View) */}
+      {/* DECISION LAYER */}
       {analytics.critical > 0 && (
         <div className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 p-4 sm:p-5 rounded-2xl shadow-sm animate-in slide-in-from-top-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div className="flex items-start gap-3">
@@ -340,13 +363,13 @@ export default function Reports({ records = [] }) {
               </p>
             </div>
           </div>
-          <button onClick={() => setQuickFilter("Critical")} className="shrink-0 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md hover:shadow-red-200 active:scale-95">
+          <button onClick={() => setQuickFilter("Critical")} className="shrink-0 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md active:scale-95">
             Review Critical List
           </button>
         </div>
       )}
 
-      {/* HEADER + LAST SYNCED */}
+      {/* HEADER & EXPORT */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">Fleet Intelligence Hub</h1>
@@ -358,30 +381,26 @@ export default function Reports({ records = [] }) {
             <p className="text-xs font-semibold text-slate-400">Live Sync Active • Last updated: {lastSynced}</p>
           </div>
         </div>
-        <button onClick={downloadMasterPDF} className="flex items-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700 px-6 py-3 rounded-xl font-bold text-sm transition-all duration-300 ease-out shadow-lg hover:shadow-indigo-200 hover:-translate-y-0.5 active:scale-95">
+        <button onClick={downloadMasterPDF} className="flex items-center justify-center w-full sm:w-auto gap-2 bg-indigo-600 text-white hover:bg-indigo-700 px-6 py-3 rounded-xl font-bold text-sm transition-all duration-300 ease-out shadow-lg hover:-translate-y-0.5 active:scale-95">
           <FileDown size={18} /> Export Master Audit
         </button>
       </div>
 
-      {/* KPI DASHBOARD with Glow & Hover Effects */}
+      {/* KPI DASHBOARD */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-        <div className="bg-gradient-to-br from-white to-slate-50 p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col relative overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
+        <div className="bg-gradient-to-br from-white to-slate-50 p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col relative transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
           <div className="flex items-center gap-3 mb-2"><BarChart3 size={20} className="text-indigo-500 group-hover:scale-110 transition-transform"/><p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Total Audited</p></div>
           <h4 className="text-4xl font-black text-slate-800 mt-2">{analytics.total}</h4>
         </div>
-
-        <div className="bg-gradient-to-br from-white to-red-50/30 p-6 rounded-3xl border border-red-100 shadow-sm flex flex-col relative overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
+        <div className="bg-gradient-to-br from-white to-red-50/30 p-6 rounded-3xl border border-red-100 shadow-sm flex flex-col relative transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
           <div className="flex items-center gap-3 mb-2"><AlertCircle size={20} className="text-red-500 group-hover:scale-110 transition-transform"/><p className="text-xs font-bold text-red-600 uppercase tracking-widest">Critical Alerts</p></div>
           <h4 className="text-4xl font-black text-red-600 mt-2">{analytics.critical}</h4>
         </div>
-
-        <div className="bg-gradient-to-br from-white to-emerald-50/30 p-6 rounded-3xl border border-emerald-100 shadow-sm flex flex-col relative overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
+        <div className="bg-gradient-to-br from-white to-emerald-50/30 p-6 rounded-3xl border border-emerald-100 shadow-sm flex flex-col relative transition-all duration-300 hover:shadow-xl hover:-translate-y-1 group">
           <div className="flex items-center gap-3 mb-2"><Battery size={20} className="text-emerald-500 group-hover:scale-110 transition-transform"/><p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Avg Battery</p></div>
           <h4 className="text-4xl font-black text-slate-800 mt-2">{analytics.avgBattery}%</h4>
         </div>
-
-        {/* The Fleet Score Card */}
-        <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-6 rounded-3xl border border-indigo-800 shadow-xl flex flex-col relative overflow-hidden transition-all duration-300 hover:shadow-2xl hover:shadow-indigo-900/30 hover:-translate-y-1 group">
+        <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-6 rounded-3xl border border-indigo-800 shadow-xl flex flex-col relative overflow-hidden transition-all duration-300 hover:-translate-y-1 group">
           <div className="absolute -right-6 -top-6 text-white/5 group-hover:scale-110 transition-transform duration-500"><Gauge size={120} /></div>
           <div className="flex items-center gap-3 mb-2 z-10"><Gauge size={20} className="text-indigo-400 group-hover:rotate-12 transition-transform"/><p className="text-xs font-bold text-indigo-300 uppercase tracking-widest">Fleet Score</p></div>
           <div className="flex items-end gap-2 mt-2 z-10">
@@ -391,7 +410,7 @@ export default function Reports({ records = [] }) {
         </div>
       </div>
 
-      {/* VISUAL ANALYTICS WITH INSIGHT LABELS */}
+      {/* CHARTS & LIVE ALERTS */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* Chart 1: Job Types */}
@@ -435,7 +454,7 @@ export default function Reports({ records = [] }) {
           </div>
         </div>
 
-        {/* ACTIONABLE ALERTS FEED */}
+        {/* Live Alerts Feed */}
         <div className="bg-slate-900 text-white p-6 rounded-3xl border border-slate-800 shadow-xl flex flex-col h-[350px]">
           <h3 className="text-sm font-bold text-white mb-4 flex items-center justify-between">
             <span className="flex items-center gap-2"><BellRing size={16} className="text-amber-400"/> Live Alerts</span>
@@ -465,40 +484,32 @@ export default function Reports({ records = [] }) {
         </div>
       </div>
 
-      {/* STICKY QUICK FILTERS & TABLE */}
+      {/* FILTER & TABLE SECTION */}
       <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden relative">
         
-        {/* Sticky Control Bar */}
+        {/* Sticky Filters */}
         <div className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 p-4 sm:p-5 flex flex-col lg:flex-row gap-4 justify-between items-start lg:items-center shadow-sm">
-           
            <div className="flex items-center gap-2 overflow-x-auto w-full lg:w-auto hide-scrollbar pb-1 lg:pb-0">
              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mr-2 shrink-0">Views:</span>
-             {[
-               { id: 'All', icon: <Filter size={14}/>, label: 'All Fleet' },
-               { id: 'Critical', icon: <ShieldAlert size={14}/>, label: 'Action Needed' },
-               { id: 'Healthy', icon: <ShieldCheck size={14}/>, label: 'Healthy' }
-             ].map(view => (
+             {[{ id: 'All', icon: <Filter size={14}/>, label: 'All Fleet' }, { id: 'Critical', icon: <ShieldAlert size={14}/>, label: 'Action Needed' }, { id: 'Healthy', icon: <ShieldCheck size={14}/>, label: 'Healthy' }].map(view => (
                <button key={view.id} onClick={() => setQuickFilter(view.id)} className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${quickFilter === view.id ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
                  {view.icon} {view.label}
                </button>
              ))}
            </div>
-
            <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto items-center">
-              <div className="w-full sm:w-72">
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input type="text" placeholder="Search Vehicle No..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all bg-slate-50" />
-                </div>
+              <div className="w-full sm:w-72 relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                <input type="text" placeholder="Search Vehicle No..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-indigo-500 bg-slate-50" />
                 <p className="text-[10px] font-medium text-slate-400 mt-1.5 ml-1 absolute">Showing {filteredRecords.length} results</p>
               </div>
-              <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="w-full sm:w-48 p-2 rounded-xl border border-slate-200 text-sm font-medium text-slate-700 focus:outline-none focus:border-indigo-500 bg-slate-50">
+              <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="w-full sm:w-48 p-2 rounded-xl border border-slate-200 text-sm font-medium text-slate-700 bg-slate-50 focus:outline-none focus:border-indigo-500">
                 {companies.map(c => <option key={c} value={c}>{c === "All" ? "All Companies" : c}</option>)}
               </select>
            </div>
         </div>
 
-        {/* MOBILE UX CARDS */}
+        {/* MOBILE CARDS */}
         <div className="block sm:hidden p-4 space-y-4 bg-slate-50">
           {filteredRecords.length > 0 ? filteredRecords.map((r) => {
             const isCrit = r.exteriorCondition?.includes("Major") || (Number(r.batteryHealth) > 0 && Number(r.batteryHealth) <= 30);
@@ -509,34 +520,20 @@ export default function Reports({ records = [] }) {
                   <h3 className="font-bold text-slate-900 text-lg">{r.vehicleNumber}</h3>
                   <p className="text-xs text-slate-500">{r.companyName || "Personal"}</p>
                 </div>
-                <span className={`px-2 py-1 rounded-lg text-[10px] font-bold ${r.jobType === 'Quick Service' ? 'bg-slate-100 text-slate-700' : 'bg-indigo-50 text-indigo-700'}`}>
-                  {r.jobType}
-                </span>
+                <span className={`px-2 py-1 rounded-lg text-[10px] font-bold ${r.jobType === 'Quick Service' ? 'bg-slate-100 text-slate-700' : 'bg-indigo-50 text-indigo-700'}`}>{r.jobType}</span>
               </div>
-              
               <div className="grid grid-cols-2 gap-2 mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Battery</p>
-                  <p className={`text-sm font-bold ${getBatteryColor(r.batteryHealth).replace('bg-', 'text-')}`}>{r.batteryHealth ? `${r.batteryHealth}%` : 'N/A'}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Condition</p>
-                  <p className="text-sm font-bold text-slate-700 truncate">{r.exteriorCondition?.split(' (')[0] || 'Standard'}</p>
-                </div>
+                <div><p className="text-[10px] font-bold text-slate-400 uppercase">Battery</p><p className={`text-sm font-bold ${getBatteryColor(r.batteryHealth).replace('bg-', 'text-')}`}>{r.batteryHealth ? `${r.batteryHealth}%` : 'N/A'}</p></div>
+                <div><p className="text-[10px] font-bold text-slate-400 uppercase">Condition</p><p className="text-sm font-bold text-slate-700 truncate">{r.exteriorCondition?.split(' (')[0] || 'Standard'}</p></div>
               </div>
-
-              <button onClick={() => downloadIndividualPDF(r)} className="w-full bg-slate-900 hover:bg-black text-white text-xs font-bold py-2.5 rounded-xl transition-all flex justify-center items-center gap-2">
-                <FileDown size={14}/> Download Report
-              </button>
+              <button onClick={() => downloadIndividualPDF(r)} className="w-full bg-slate-900 hover:bg-black text-white text-xs font-bold py-2.5 rounded-xl transition-all flex justify-center items-center gap-2"><FileDown size={14}/> Download Report</button>
             </div>
-          )}) : (
-            <div className="p-8 text-center text-slate-500 text-sm">No vehicles match filters.</div>
-          )}
+          )}) : (<div className="p-8 text-center text-slate-500 text-sm">No vehicles match filters.</div>)}
         </div>
 
         {/* DESKTOP TABLE */}
         <div className="hidden sm:block overflow-x-auto pb-10">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-left border-collapse min-w-[700px]">
             <thead>
               <tr className="bg-slate-50/50 border-b border-slate-200">
                 <th className="p-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-6">Vehicle Details</th>
@@ -548,10 +545,13 @@ export default function Reports({ records = [] }) {
             <tbody className="divide-y divide-slate-100">
               {filteredRecords.length > 0 ? filteredRecords.map((r) => (
                 <React.Fragment key={r.id}>
-                  {/* PRIORITY INDICATOR STRIP */}
+                  {/* Row View */}
                   <tr className={`transition-all duration-300 ease-out cursor-pointer group ${getStatusRowBorder(r)} ${expandedRow === r.id ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`} onClick={() => toggleRow(r.id)}>
                     <td className="p-5 pl-5">
-                      <p className="font-bold text-slate-800 text-base group-hover:text-indigo-600 transition-colors">{r.vehicleNumber}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-slate-800 text-base group-hover:text-indigo-600 transition-colors">{r.vehicleNumber}</p>
+                        {r.extraNotes?.length > 0 && <span className="bg-blue-100 text-blue-700 text-[9px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1"><MessageSquare size={10}/> {r.extraNotes.length}</span>}
+                      </div>
                       <p className="text-xs text-slate-500 mt-0.5">{r.companyName || "Personal Vehicle"}</p>
                     </td>
                     <td className="p-5">
@@ -581,59 +581,80 @@ export default function Reports({ records = [] }) {
                     </td>
                   </tr>
 
-                  {/* EXPANDED ROW */}
+                  {/* EXPANDED ROW LOGIC WITH REMARKS */}
                   {expandedRow === r.id && (
                     <tr>
                       <td colSpan="4" className="p-0 border-b border-indigo-100">
                         <div className="bg-indigo-50/40 p-4 sm:p-6 md:p-8 animate-in slide-in-from-top-2 duration-200 shadow-inner">
                           
-                          <div className="flex justify-between items-center mb-4 sm:mb-6">
+                          <div className="flex justify-between items-center mb-6">
                              <span className="text-xs font-bold text-slate-500 uppercase tracking-widest bg-white px-3 py-1.5 rounded-lg border border-slate-200">Record #{r.id.toString().slice(-6)}</span>
                              <button onClick={() => downloadIndividualPDF(r)} className="bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-600 hover:text-white px-3 sm:px-4 py-2 rounded-lg text-[10px] sm:text-xs font-bold inline-flex items-center gap-1.5 sm:gap-2 transition-all shadow-sm">
                                <FileDown size={14} /> Official Invoice
                              </button>
                           </div>
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 md:gap-8">
-                            <div className="space-y-2 lg:col-span-2">
-                              <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-indigo-200 pb-2">Diagnostic Notes</h4>
-                              <p className="text-xs sm:text-sm text-slate-700 leading-relaxed bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm whitespace-pre-wrap">
-                                {r.issueDescription || <span className="italic text-slate-400">Standard checkup required. No specific issues noted.</span>}
-                              </p>
-                            </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8">
+                            
+                            {/* Diagnostic Notes & Remarks UI */}
+                            <div className="space-y-4 lg:col-span-2">
+                              <div>
+                                <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-indigo-200 pb-2 mb-2">Initial Client Report</h4>
+                                <p className="text-xs sm:text-sm text-slate-700 leading-relaxed bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm whitespace-pre-wrap">
+                                  {r.issueDescription || <span className="italic text-slate-400">Standard checkup required. No specific issues noted.</span>}
+                                </p>
+                              </div>
 
-                            <div className="space-y-2 sm:space-y-3 bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm h-fit">
-                              <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-slate-100 pb-2 mb-2 sm:mb-3">Client Contact</h4>
-                              <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700"><User size={14} className="text-slate-400 shrink-0"/> <span className="truncate font-medium">{r.fleetOwnerName}</span></div>
-                              <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700"><Phone size={14} className="text-slate-400 shrink-0"/> {r.fleetOwnerContact}</div>
-                              <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700"><Mail size={14} className="text-slate-400 shrink-0"/> <span className="truncate">{r.fleetOwnerEmail}</span></div>
-                            </div>
+                              <div className="bg-white p-4 rounded-xl border border-blue-200 shadow-sm">
+                                <h4 className="text-[10px] sm:text-xs font-bold text-blue-800 uppercase tracking-widest mb-3 flex items-center gap-2"><Wrench size={14}/> Mechanic Remarks Log</h4>
+                                
+                                {r.extraNotes && r.extraNotes.length > 0 ? (
+                                  <div className="space-y-2 mb-4 max-h-32 overflow-y-auto pr-2">
+                                    {r.extraNotes.map((note, idx) => (
+                                      <div key={idx} className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg flex items-start gap-2">
+                                        <div className="mt-1 w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></div>
+                                        <p className="text-xs text-slate-700 leading-relaxed">{note}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-slate-400 italic mb-4">No post-inspection remarks added yet.</p>
+                                )}
 
-                            {r.jobType === "General Service" && (
-                              <div className="space-y-2 lg:col-span-3">
-                                <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-indigo-200 pb-2">Technical Telemetry</h4>
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 pt-2">
-                                  <div className="bg-white p-2.5 sm:p-3 rounded-xl border border-slate-200">
-                                    <p className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-bold">Paint Status</p>
-                                    <p className="text-xs sm:text-sm font-medium text-slate-800 mt-0.5 sm:mt-1 truncate">{r.paintCondition}</p>
-                                  </div>
-                                  <div className="bg-white p-2.5 sm:p-3 rounded-xl border border-slate-200">
-                                    <p className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-bold">Tyre Pressure</p>
-                                    <p className={`text-xs sm:text-sm mt-0.5 sm:mt-1 truncate ${getTyreStatus(r.tyrePressure).color}`}>{getTyreStatus(r.tyrePressure).text}</p>
-                                  </div>
-                                  <div className="bg-white p-2.5 sm:p-3 rounded-xl border border-slate-200">
-                                    <p className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-bold">Logged Date</p>
-                                    <p className="text-xs sm:text-sm font-medium text-slate-800 mt-0.5 sm:mt-1 truncate">{r.date.split(',')[0]}</p>
-                                  </div>
-                                  <div className="bg-white p-2.5 sm:p-3 rounded-xl border border-slate-200 flex items-center justify-between">
-                                    <div>
-                                      <p className="text-[9px] sm:text-[10px] text-slate-500 uppercase font-bold">System Check</p>
-                                      <p className="text-[10px] sm:text-xs font-bold text-emerald-600 mt-0.5 sm:mt-1 truncate flex items-center gap-1"><CheckCircle2 size={12}/> Verified</p>
-                                    </div>
-                                  </div>
+                                <div className="flex flex-col sm:flex-row gap-2">
+                                  <input 
+                                    type="text" value={newNote} onChange={(e) => setNewNote(e.target.value)} 
+                                    placeholder="Add required part, finding, or status update..." 
+                                    className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2.5 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+                                  />
+                                  <button onClick={() => handleAddRemark(r.id)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-xs font-bold transition-colors flex justify-center items-center gap-1.5 shrink-0">
+                                    <Plus size={14}/> Save Remark
+                                  </button>
                                 </div>
                               </div>
-                            )}
+                            </div>
+
+                            {/* Client & Tech Data */}
+                            <div className="space-y-4">
+                              <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-slate-100 pb-2 mb-2 sm:mb-3">Client Contact</h4>
+                                <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 mb-1"><User size={14} className="text-slate-400 shrink-0"/> <span className="truncate font-medium">{r.fleetOwnerName}</span></div>
+                                <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700 mb-1"><Phone size={14} className="text-slate-400 shrink-0"/> {r.fleetOwnerContact}</div>
+                                <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-700"><Mail size={14} className="text-slate-400 shrink-0"/> <span className="truncate">{r.fleetOwnerEmail}</span></div>
+                              </div>
+
+                              {r.jobType === "General Service" && (
+                                <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm">
+                                  <h4 className="text-[10px] sm:text-xs font-bold text-indigo-800 uppercase tracking-widest border-b border-slate-100 pb-2 mb-2 sm:mb-3">Telemetry</h4>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div><p className="text-[9px] text-slate-500 uppercase font-bold">Paint Status</p><p className="text-xs font-medium text-slate-800 mt-0.5 truncate">{r.paintCondition}</p></div>
+                                    <div><p className="text-[9px] text-slate-500 uppercase font-bold">Tyre Pressure</p><p className={`text-xs mt-0.5 truncate ${getTyreStatus(r.tyrePressure).color}`}>{getTyreStatus(r.tyrePressure).text}</p></div>
+                                    <div className="col-span-2"><p className="text-[9px] text-slate-500 uppercase font-bold">Logged Date</p><p className="text-xs font-medium text-slate-800 mt-0.5 truncate">{r.date.split(',')[0]}</p></div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            
                           </div>
                         </div>
                       </td>
